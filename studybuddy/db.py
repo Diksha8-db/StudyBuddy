@@ -133,15 +133,112 @@ class Database:
                 );
             """)
 
-            # Create useful indexes for fast quiz selection & analytics
+            # 4. Viva Sessions table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS viva_sessions (
+                    id TEXT PRIMARY KEY,
+                    topic TEXT NOT NULL,
+                    difficulty TEXT NOT NULL,
+                    num_questions INTEGER NOT NULL,
+                    current_index INTEGER DEFAULT 0,
+                    total_score REAL DEFAULT 0.0,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT
+                );
+            """)
+
+            # 5. Viva Answers table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS viva_answers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    answer TEXT NOT NULL,
+                    score REAL NOT NULL,
+                    feedback TEXT NOT NULL,
+                    missed_points TEXT NOT NULL,
+                    is_follow_up BOOLEAN NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES viva_sessions(id) ON DELETE CASCADE
+                );
+            """)
+
+            # 6. Weak Topics table (shared memory across modes)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS weak_topics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    severity INTEGER NOT NULL DEFAULT 2,
+                    reason TEXT,
+                    times_flagged INTEGER DEFAULT 1,
+                    last_flagged_at TEXT NOT NULL,
+                    resolved BOOLEAN DEFAULT 0,
+                    UNIQUE(topic, source)
+                );
+            """)
+
+            # 7. Revisions table (scheduled review items)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS revisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic TEXT NOT NULL,
+                    due_date TEXT NOT NULL,
+                    note TEXT,
+                    done BOOLEAN DEFAULT 0
+                );
+            """)
+
+            # Create useful indexes for fast quiz selection, viva tracking & analytics
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_cards_deck ON cards(deck);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_cards_due ON cards(due_date);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_reviews_card ON reviews(card_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_viva_answers_sess ON viva_answers(session_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_weak_topics_topic ON weak_topics(topic);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_revisions_due ON revisions(due_date);")
 
             conn.commit()
 
-        # Seed demo deck
+        # Seed demo data
         self.seed_demo_deck()
+        self.seed_demo_viva_and_revisions()
+
+    def seed_demo_viva_and_revisions(self) -> None:
+        """Seed demo weak topic and revision if empty."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM weak_topics")
+            if cursor.fetchone()[0] == 0:
+                now_str = datetime.now().isoformat()
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO weak_topics (topic, source, severity, reason, times_flagged, last_flagged_at, resolved)
+                    VALUES (?, ?, ?, ?, ?, ?, 0)
+                    """,
+                    (
+                        "Rotational Dynamics",
+                        "viva",
+                        2,
+                        "Struggled with angular momentum conservation in viva",
+                        2,
+                        now_str,
+                    ),
+                )
+
+            cursor.execute("SELECT COUNT(*) FROM revisions")
+            if cursor.fetchone()[0] == 0:
+                today_str = date.today().isoformat()
+                cursor.execute(
+                    """
+                    INSERT INTO revisions (topic, due_date, note, done)
+                    VALUES (?, ?, ?, 0)
+                    """,
+                    (
+                        "Rotational Dynamics",
+                        today_str,
+                        "Review torque and angular momentum formulas",
+                    ),
+                )
 
     def seed_demo_deck(self) -> None:
         """Seed demo deck 'Physics Chapter 3' if empty."""
@@ -458,3 +555,293 @@ class Database:
                 "upcoming_days": upcoming,
                 "total_due_in_window": due_today + total_upcoming,
             }
+
+    # -----------------------------------------------------------------------
+    # VivaMate Database Operations
+    # -----------------------------------------------------------------------
+
+    def create_viva_session(
+        self,
+        topic: str,
+        difficulty: str = "intermediate",
+        num_questions: int = 5,
+    ) -> str:
+        """Create a new viva exam session."""
+        session_id = f"viva_{uuid.uuid4().hex[:8]}"
+        now_str = datetime.now().isoformat()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO viva_sessions (id, topic, difficulty, num_questions, current_index, total_score, started_at)
+                VALUES (?, ?, ?, ?, 0, 0.0, ?)
+                """,
+                (session_id, topic.strip(), difficulty.strip().lower(), num_questions, now_str),
+            )
+            conn.commit()
+            return session_id
+
+    def get_viva_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get viva session details by ID."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM viva_sessions WHERE id = ?", (session_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def update_viva_session(
+        self,
+        session_id: str,
+        current_index: int,
+        total_score: float,
+        finished_at: Optional[str] = None,
+        difficulty: Optional[str] = None,
+    ) -> None:
+        """Update viva session index, score, difficulty, and finish timestamp."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if difficulty:
+                cursor.execute(
+                    """
+                    UPDATE viva_sessions
+                    SET current_index = ?, total_score = ?, finished_at = ?, difficulty = ?
+                    WHERE id = ?
+                    """,
+                    (current_index, total_score, finished_at, difficulty, session_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE viva_sessions
+                    SET current_index = ?, total_score = ?, finished_at = ?
+                    WHERE id = ?
+                    """,
+                    (current_index, total_score, finished_at, session_id),
+                )
+            conn.commit()
+
+    def add_viva_answer(
+        self,
+        session_id: str,
+        question: str,
+        answer: str,
+        score: float,
+        feedback: str,
+        missed_points: List[str],
+        is_follow_up: bool = False,
+    ) -> int:
+        """Record a student's answer to a viva question."""
+        now_str = datetime.now().isoformat()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO viva_answers (session_id, question, answer, score, feedback, missed_points, is_follow_up, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    question.strip(),
+                    answer.strip(),
+                    score,
+                    feedback.strip(),
+                    json.dumps(missed_points),
+                    1 if is_follow_up else 0,
+                    now_str,
+                ),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_viva_answers(self, session_id: str) -> List[Dict[str, Any]]:
+        """Retrieve all answers for a viva session."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM viva_answers WHERE session_id = ? ORDER BY id ASC",
+                (session_id,),
+            )
+            rows = []
+            for r in cursor.fetchall():
+                d = dict(r)
+                try:
+                    d["missed_points"] = json.loads(d["missed_points"])
+                except Exception:
+                    d["missed_points"] = []
+                rows.append(d)
+            return rows
+
+    # -----------------------------------------------------------------------
+    # Shared Memory: Weak Topics & Revisions
+    # -----------------------------------------------------------------------
+
+    def save_or_update_weak_topic(
+        self,
+        topic: str,
+        reason: str,
+        severity: int = 2,
+        source: str = "viva",
+    ) -> Dict[str, Any]:
+        """
+        Upsert a weak topic with deduplication.
+        If the topic and source exist, bumps times_flagged and updates last_flagged_at.
+        """
+        now_str = datetime.now().isoformat()
+        clamped_sev = max(1, min(3, int(severity)))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO weak_topics (topic, source, severity, reason, times_flagged, last_flagged_at, resolved)
+                VALUES (?, ?, ?, ?, 1, ?, 0)
+                ON CONFLICT(topic, source) DO UPDATE SET
+                    times_flagged = weak_topics.times_flagged + 1,
+                    severity = MAX(weak_topics.severity, excluded.severity),
+                    reason = excluded.reason,
+                    last_flagged_at = excluded.last_flagged_at,
+                    resolved = 0
+                """,
+                (topic.strip(), source.strip(), clamped_sev, reason.strip(), now_str),
+            )
+            conn.commit()
+
+            cursor.execute(
+                "SELECT * FROM weak_topics WHERE topic = ? AND source = ?",
+                (topic.strip(), source.strip()),
+            )
+            return dict(cursor.fetchone())
+
+    def get_weak_topics_for_topic(self, topic: str) -> List[Dict[str, Any]]:
+        """Find existing weak topics matching or mentioning a topic."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM weak_topics
+                WHERE resolved = 0 AND LOWER(topic) LIKE LOWER(?)
+                ORDER BY severity DESC, times_flagged DESC
+                """,
+                (f"%{topic.strip()}%",),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def add_revision(
+        self,
+        topic: str,
+        due_date: str,
+        note: str = "",
+    ) -> int:
+        """Schedule a revision item."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO revisions (topic, due_date, note, done)
+                VALUES (?, ?, ?, 0)
+                """,
+                (topic.strip(), due_date.strip(), note.strip()),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_merged_weak_topics(
+        self,
+        deck: Optional[str] = None,
+        limit: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """
+        Merge weak topics from both flashcard reviews and viva exams.
+        """
+        merged_map: Dict[str, Dict[str, Any]] = {}
+
+        # 1. From Flashcards reviews
+        fc_topics = self.get_weak_topics(deck=deck, limit=limit * 2)
+        for fc in fc_topics:
+            t_name = fc["topic"]
+            merged_map[t_name.lower()] = {
+                "topic": t_name,
+                "source": "flashcards",
+                "severity": 3 if fc.get("miss_rate", 0) >= 0.5 else 2,
+                "reason": f"Flashcard miss rate: {int(round(fc.get('miss_rate', 0) * 100))}%",
+                "miss_rate": fc.get("miss_rate", 0),
+                "times_flagged": fc.get("missed_count", 1),
+            }
+
+        # 2. From weak_topics table (Viva & manual)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM weak_topics
+                WHERE resolved = 0
+                ORDER BY severity DESC, times_flagged DESC
+                """
+            )
+            for row in cursor.fetchall():
+                t_dict = dict(row)
+                key = t_dict["topic"].lower()
+                if key in merged_map:
+                    # Combine info: bump severity and note multiple sources
+                    merged_map[key]["times_flagged"] += t_dict["times_flagged"]
+                    merged_map[key]["severity"] = max(merged_map[key]["severity"], t_dict["severity"])
+                    merged_map[key]["source"] = "flashcards + " + t_dict["source"]
+                else:
+                    merged_map[key] = {
+                        "topic": t_dict["topic"],
+                        "source": t_dict["source"],
+                        "severity": t_dict["severity"],
+                        "reason": t_dict.get("reason", "Flagged in viva"),
+                        "miss_rate": None,
+                        "times_flagged": t_dict["times_flagged"],
+                    }
+
+        # Sort by severity descending, times_flagged descending
+        results = sorted(
+            merged_map.values(),
+            key=lambda x: (x["severity"], x["times_flagged"]),
+            reverse=True,
+        )
+        return results[:limit]
+
+    def get_combined_revision_plan(
+        self,
+        deck: Optional[str] = None,
+        days_ahead: int = 3,
+    ) -> Dict[str, Any]:
+        """
+        Get combined revision plan including flashcards due and scheduled revisions.
+        """
+        today = date.today()
+        today_str = today.isoformat()
+
+        # Flashcard schedule
+        fc_sched = self.schedule_review(deck=deck, days_ahead=days_ahead)
+
+        # Revisions schedule
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM revisions WHERE done = 0 AND due_date <= ?",
+                (today_str,),
+            )
+            revisions_due_today = cursor.fetchone()[0]
+
+            upcoming_revs = []
+            from datetime import timedelta
+            for i in range(1, days_ahead + 1):
+                target_date_str = (today + timedelta(days=i)).isoformat()
+                cursor.execute(
+                    "SELECT COUNT(*) FROM revisions WHERE done = 0 AND due_date = ?",
+                    (target_date_str,),
+                )
+                cnt = cursor.fetchone()[0]
+                upcoming_revs.append({"date": target_date_str, "count": cnt})
+
+        return {
+            "flashcards_due_today": fc_sched["due_today"],
+            "revisions_due_today": revisions_due_today,
+            "total_due_today": fc_sched["due_today"] + revisions_due_today,
+            "upcoming_flashcards": fc_sched["upcoming_days"],
+            "upcoming_revisions": upcoming_revs,
+            "days_ahead": days_ahead,
+        }
