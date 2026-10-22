@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StudyBuddy - Voice-First Spaced Repetition MCP</title>
+  <meta name="description" content="Hands-free, voice-first study partner powered by MCP and SM-2 spaced repetition for Alexa+.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Navigation Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+            <circle cx="12" cy="9" r="2.5"></circle>
+            <path d="M12 12v3"></path>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>StudyBuddy <span class="badge-mcp">MCP</span></h1>
+          <p class="tagline">Hands-free voice study partner with SM-2 memory</p>
+        </div>
+      </div>
+
+      <div class="header-status">
+        <div class="status-pill status-healthy" id="server-status">
+          <span class="status-dot"></span>
+          <span class="status-label">Streamable HTTP /mcp Connected</span>
+        </div>
+        <div class="audio-control-group">
+          <button id="tts-toggle-btn" class="icon-btn" title="Toggle Spoken Audio Feedback" aria-label="Toggle voice output">
+            <svg id="tts-icon-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+            </svg>
+            <svg id="tts-icon-off" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <line x1="23" y1="9" x2="17" y2="15"></line>
+              <line x1="17" y1="9" x2="23" y2="15"></line>
+            </svg>
+          </button>
+          <button id="handsfree-toggle-btn" class="pill-btn" title="Toggle Auto-Listen (Hands-Free Mode)">
+            <span class="pill-dot"></span>
+            <span>Hands-Free</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Dual Panel Layout -->
+    <main class="main-content">
+      <!-- Left Panel: Voice Conversation & Quiz HUD -->
+      <section class="conversation-panel">
+        <!-- Active Quiz Banner (visible during quizzes) -->
+        <div id="quiz-hud" class="quiz-hud hidden">
+          <div class="quiz-hud-header">
+            <div class="quiz-topic-badge" id="quiz-hud-topic">Physics Chapter 3</div>
+            <div class="quiz-progress-text" id="quiz-hud-progress">Question 1 of 5</div>
+          </div>
+          <div class="quiz-progress-bar">
+            <div class="quiz-progress-fill" id="quiz-hud-fill" style="width: 20%;"></div>
+          </div>
+          <div class="quiz-active-question" id="quiz-hud-question">
+            Loading question...
+          </div>
+        </div>
+
+        <!-- Chat History Window -->
+        <div class="chat-container" id="chat-messages" role="log" aria-live="polite">
+          <div class="chat-message assistant">
+            <div class="avatar alexa-avatar">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="22"></line>
+              </svg>
+            </div>
+            <div class="message-bubble">
+              <div class="message-sender">StudyBuddy (Alexa+)</div>
+              <p>Hi there! I'm your hands-free study partner. I use the SM-2 algorithm to schedule what you need to review. Try tapping the mic or clicking one of the prompts below!</p>
+              <div class="speech-tag">Ready for voice input</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Audio Waveform Visualizer -->
+        <div class="audio-visualizer-container" id="visualizer-container">
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <span class="visualizer-label" id="visualizer-label">Mic Ready</span>
+        </div>
+
+        <!-- Quick Voice Prompts Chips -->
+        <div class="quick-prompts-bar">
+          <span class="quick-label">Try saying:</span>
+          <button class="chip-btn" data-prompt="Quiz me on Physics Chapter 3">
+            🎯 "Quiz me on Physics Chapter 3"
+          </button>
+          <button class="chip-btn" data-prompt="What are my weak topics?">
+            🧠 "What are my weak topics?"
+          </button>
+          <button class="chip-btn" data-prompt="When should I review next?">
+            📅 "When should I review next?"
+          </button>
+          <button class="chip-btn" data-prompt="List my decks">
+            📚 "List my decks"
+          </button>
+        </div>
+
+        <!-- Spoken Interaction Input Area -->
+        <div class="voice-controls-bar">
+          <div class="mic-container">
+            <button id="mic-button" class="mic-button" aria-label="Activate voice microphone" title="Click to speak">
+              <div class="mic-ring"></div>
+              <div class="mic-ring-outer"></div>
+              <svg class="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="22"></line>
+              </svg>
+            </button>
+          </div>
+
+          <form id="text-input-form" class="text-input-form">
+            <input type="text" id="user-input" class="user-input" placeholder="Or type what you would say to Alexa..." autocomplete="off">
+            <button type="submit" class="send-button" aria-label="Send message">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <!-- Right Panel: Live MCP Inspector & Tool Calls Log -->
+      <aside class="inspector-panel">
+        <div class="inspector-header">
+          <div class="inspector-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="4 17 10 11 4 5"></polyline>
+              <line x1="12" y1="19" x2="20" y2="19"></line>
+            </svg>
+            <h2>Live MCP Inspector</h2>
+          </div>
+          <div class="inspector-actions">
+            <span class="call-counter" id="call-counter">0 Calls</span>
+            <button id="clear-inspector-btn" class="icon-text-btn" title="Clear log">Clear</button>
+          </div>
+        </div>
+
+        <div class="inspector-info-banner">
+          <div class="info-row">
+            <span class="info-label">Transport:</span>
+            <span class="info-val">Streamable HTTP</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Endpoint:</span>
+            <span class="info-val">/mcp</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Spec Version:</span>
+            <span class="info-val highlight">2025-11-25+</span>
+          </div>
+        </div>
+
+        <!-- Log of Live MCP Calls -->
+        <div class="inspector-logs" id="inspector-logs">
+          <div class="empty-inspector-state" id="empty-state">
+            <div class="empty-icon">⚡</div>
+            <h3>Waiting for MCP Tool Calls</h3>
+            <p>Speak or submit a command to watch Alexa+ invoke StudyBuddy MCP tools in real-time.</p>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
