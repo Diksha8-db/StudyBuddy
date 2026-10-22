@@ -169,6 +169,137 @@ def schedule_review(
     return core.schedule_review(deck=deck, days_ahead=days_ahead)
 
 
+@mcp.tool()
+def get_revision_plan(
+    deck: Optional[str] = None,
+    days_ahead: int = 3,
+) -> Dict[str, Any]:
+    """
+    Get a unified revision plan combining due flashcards and scheduled viva topic revisions.
+
+    Use this tool when the user asks 'What is my revision plan?' or 'What do I need to study today?'.
+    Returns due counts and a consolidated voice 'speech' field.
+
+    Args:
+        deck: Optional deck filter.
+        days_ahead: Days into the future to forecast (default 3).
+    """
+    return core.get_revision_plan(deck=deck, days_ahead=days_ahead)
+
+
+@mcp.tool()
+def start_viva(
+    topic: str,
+    num_questions: int = 5,
+    difficulty: str = "intermediate",
+) -> Dict[str, Any]:
+    """
+    Start an oral viva practice session on a specific topic.
+
+    WHEN TO USE: Call this tool when the student says 'Practice viva on Physics',
+    'Exam viva on Newton's Laws', or 'Test me on concepts'.
+    The calling agent (Alexa+) generates open-ended conceptual questions and scores them.
+    The server manages session state, focus areas, difficulty progression, and memory.
+    Returns clear 'instructions' telling the agent what to ask next, plus a 'speech' field.
+
+    Args:
+        topic: The subject or topic of the viva exam (e.g. 'Newtonian Mechanics').
+        num_questions: Number of questions for this session (default 5, max 15).
+        difficulty: Starting difficulty: 'beginner', 'intermediate', or 'advanced'.
+    """
+    return core.start_viva(topic=topic, num_questions=num_questions, difficulty=difficulty)
+
+
+@mcp.tool()
+def record_answer(
+    session_id: str,
+    question: str,
+    answer: str,
+    score: Optional[float] = None,
+    feedback: Optional[str] = None,
+    missed_points: Optional[list] = None,
+    is_follow_up: bool = False,
+) -> Dict[str, Any]:
+    """
+    Record and evaluate a student's answer in an active viva exam session.
+
+    WHEN TO USE: Call this tool immediately after the student speaks their answer
+    to a viva question. The agent provides a score (0-10) and feedback. If score is
+    omitted and BEDROCK_MODEL_ID is set, the server evaluates via AWS Bedrock.
+    Automatically updates difficulty, triggers follow-up questions when needed,
+    saves weak topics, and schedules revisions.
+
+    Args:
+        session_id: The active viva session ID from start_viva.
+        question: The question that was asked to the student.
+        answer: The student's spoken answer.
+        score: Score from 0 to 10 (0=fail, 10=flawless). Required unless Bedrock is configured.
+        feedback: Constructive 1-2 sentence spoken feedback for the student.
+        missed_points: Optional list of key concepts or points the student missed.
+        is_follow_up: True if this answer was for a follow-up probe.
+    """
+    return core.record_answer(
+        session_id=session_id,
+        question=question,
+        answer=answer,
+        score=score,
+        feedback=feedback,
+        missed_points=missed_points,
+        is_follow_up=is_follow_up,
+    )
+
+
+@mcp.tool()
+def save_weak_topic(
+    topic: str,
+    reason: str,
+    severity: int = 2,
+    source: str = "viva",
+) -> Dict[str, Any]:
+    """
+    Manually record or flag a weak topic in shared memory.
+
+    WHEN TO USE: Call this tool when the student says 'I always forget Rotational Dynamics'
+    or the agent identifies a conceptual weak point outside of an active quiz.
+
+    Args:
+        topic: The concept or subject (e.g. 'Thermodynamics Second Law').
+        reason: Why this topic is flagged as weak.
+        severity: Urgency from 1 (minor) to 3 (critical).
+        source: Origin of flag (default 'viva').
+    """
+    return core.save_weak_topic(
+        topic=topic,
+        reason=reason,
+        severity=severity,
+        source=source,
+    )
+
+
+@mcp.tool()
+def schedule_revision(
+    topic: str,
+    days_from_now: int = 1,
+    note: str = "",
+) -> Dict[str, Any]:
+    """
+    Schedule a dedicated revision session for a topic.
+
+    WHEN TO USE: Call this tool when the student or agent wants to schedule a review
+    for a specific concept in the near future.
+
+    Args:
+        topic: The topic to revise.
+        days_from_now: Days until review is due (0=today, 1=tomorrow, etc.).
+        note: Optional study hint or note.
+    """
+    return core.schedule_revision(
+        topic=topic,
+        days_from_now=days_from_now,
+        note=note,
+    )
+
+
 # ---------------------------------------------------------------------------
 # HTTP Endpoints: Health Check & Simulator Backend
 # ---------------------------------------------------------------------------
@@ -181,7 +312,7 @@ async def health_endpoint(request: Request) -> JSONResponse:
         {
             "status": "healthy",
             "service": "studybuddy-mcp",
-            "version": "1.0.0",
+            "version": "1.1.0",
             "transport": "streamable-http",
             "mcp_endpoint": "/mcp",
             "protocol_spec": "2025-11-25+",
@@ -194,6 +325,11 @@ async def health_endpoint(request: Request) -> JSONResponse:
                 "grade_answer",
                 "get_weak_topics",
                 "schedule_review",
+                "get_revision_plan",
+                "start_viva",
+                "record_answer",
+                "save_weak_topic",
+                "schedule_revision",
             ],
         }
     )
@@ -232,7 +368,44 @@ async def simulator_chat(request: Request) -> JSONResponse:
     lower_u = utterance.lower()
 
     # Conversational intent router & state machine
-    if session_id and current_card_id:
+    if session_id and str(session_id).startswith("viva_"):
+        # Active viva exam session: student is answering a viva prompt
+        current_question = body.get("question") or "Explain the core physical principles."
+        is_follow_up = bool(body.get("is_follow_up", False))
+
+        # Check if caller supplied score, or evaluate
+        score = body.get("score")
+        feedback = body.get("feedback")
+        missed_points = body.get("missed_points")
+
+        # In the web simulator, if no external judge/Bedrock is set, provide smart scoring
+        if score is None and not os.environ.get("BEDROCK_MODEL_ID"):
+            word_count = len(utterance.split())
+            if word_count >= 8:
+                score = 8.5
+                feedback = "Great depth and clear conceptual terminology."
+                missed_points = []
+            elif word_count >= 4:
+                score = 6.0
+                feedback = "Good foundation, but you left out the mathematical relationship."
+                missed_points = ["exact formula derivation and boundary conditions"]
+            else:
+                score = 3.0
+                feedback = "Too brief to demonstrate full conceptual mastery."
+                missed_points = ["fundamental definitions and physical examples"]
+
+        tool_name = "record_answer"
+        tool_args = {
+            "session_id": session_id,
+            "question": current_question,
+            "answer": utterance,
+            "score": score,
+            "feedback": feedback,
+            "missed_points": missed_points or [],
+            "is_follow_up": is_follow_up,
+        }
+
+    elif session_id and current_card_id:
         # Active quiz session: student is answering the current question
         tool_name = "grade_answer"
         tool_args = {
@@ -240,6 +413,22 @@ async def simulator_chat(request: Request) -> JSONResponse:
             "card_id": int(current_card_id),
             "user_answer": utterance,
         }
+    elif any(kw in lower_u for kw in ["viva", "oral exam", "interview me"]):
+        topic = "Newtonian Mechanics"
+        for candidate in ["Physics Chapter 3", "Newtonian Mechanics", "Thermodynamics", "Electromagnetism"]:
+            if candidate.lower() in lower_u:
+                topic = candidate
+                break
+
+        diff = "intermediate"
+        if "advanced" in lower_u or "hard" in lower_u:
+            diff = "advanced"
+        elif "beginner" in lower_u or "easy" in lower_u:
+            diff = "beginner"
+
+        tool_name = "start_viva"
+        tool_args = {"topic": topic, "num_questions": 3, "difficulty": diff}
+
     elif any(kw in lower_u for kw in ["quiz", "test", "drill", "practice"]):
         # Match deck name or fallback to "Physics Chapter 3"
         decks = core.db.list_decks()
@@ -263,6 +452,10 @@ async def simulator_chat(request: Request) -> JSONResponse:
         tool_name = "start_quiz"
         tool_args = {"deck": matched_deck, "num_questions": num_q, "mode": mode}
 
+    elif any(kw in lower_u for kw in ["revision plan", "my plan", "what to study"]):
+        tool_name = "get_revision_plan"
+        tool_args = {"days_ahead": 3}
+
     elif any(kw in lower_u for kw in ["weak", "struggl", "miss rate", "hard for me"]):
         tool_name = "get_weak_topics"
         tool_args = {"limit": 3}
@@ -276,7 +469,6 @@ async def simulator_chat(request: Request) -> JSONResponse:
         tool_args = {}
 
     elif "add card" in lower_u or "add flashcard" in lower_u or "new card" in lower_u:
-        # Parse simple "add card: question | answer" or defaults
         parts = re.split(r"[:\?]\s*", utterance, maxsplit=2)
         question = parts[1].strip() if len(parts) > 1 else "What is Ohm's Law?"
         answer = parts[2].strip() if len(parts) > 2 else "Voltage equals current times resistance."
@@ -315,6 +507,7 @@ async def simulator_chat(request: Request) -> JSONResponse:
     updated_session = None
     if tool_name == "start_quiz" and parsed_data.get("success"):
         updated_session = {
+            "type": "quiz",
             "session_id": parsed_data["session_id"],
             "card_id": parsed_data["card_id"],
             "total_questions": parsed_data.get("total_questions", 5),
@@ -324,6 +517,7 @@ async def simulator_chat(request: Request) -> JSONResponse:
     elif tool_name == "grade_answer" and parsed_data.get("success"):
         if not parsed_data.get("is_finished"):
             updated_session = {
+                "type": "quiz",
                 "session_id": session_id,
                 "card_id": parsed_data.get("next_card_id"),
                 "total_questions": parsed_data.get("total_questions", 5),
@@ -332,6 +526,51 @@ async def simulator_chat(request: Request) -> JSONResponse:
             }
         else:
             updated_session = None  # Quiz complete
+    elif tool_name == "start_viva" and parsed_data.get("success"):
+        viva_topic = parsed_data.get("topic", "Physics")
+        init_q = f"To begin your {parsed_data.get('difficulty')} viva on {viva_topic}: explain the foundational physical laws and their practical significance."
+        updated_session = {
+            "type": "viva",
+            "session_id": parsed_data["session_id"],
+            "topic": viva_topic,
+            "difficulty": parsed_data.get("difficulty", "intermediate"),
+            "total_questions": parsed_data.get("total_questions", 3),
+            "current_index": 1,
+            "question": init_q,
+            "is_follow_up": False,
+        }
+    elif tool_name == "record_answer" and parsed_data.get("success"):
+        if not parsed_data.get("is_finished"):
+            if parsed_data.get("next_action") == "ask_follow_up":
+                follow_up_hint = parsed_data.get("follow_up_hint", "this concept")
+                f_q = f"Follow-up: Can you elaborate more deeply on {follow_up_hint}?"
+                updated_session = {
+                    "type": "viva",
+                    "session_id": session_id,
+                    "topic": body.get("topic", "Physics"),
+                    "difficulty": parsed_data.get("next_difficulty", "intermediate"),
+                    "total_questions": body.get("total_questions", 3),
+                    "current_index": body.get("current_index", 1),
+                    "question": f_q,
+                    "is_follow_up": True,
+                }
+            else:
+                q_idx = parsed_data.get("current_question_index", 2)
+                tot_q = parsed_data.get("total_questions", 3)
+                next_d = parsed_data.get("next_difficulty", "intermediate")
+                next_q = f"Question {q_idx}: Analyze the dynamic equilibrium and energy conservation principles at {next_d} level."
+                updated_session = {
+                    "type": "viva",
+                    "session_id": session_id,
+                    "topic": body.get("topic", "Physics"),
+                    "difficulty": next_d,
+                    "total_questions": tot_q,
+                    "current_index": q_idx,
+                    "question": next_q,
+                    "is_follow_up": False,
+                }
+        else:
+            updated_session = None  # Viva complete
 
     return JSONResponse(
         {

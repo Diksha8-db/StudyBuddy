@@ -296,7 +296,19 @@
     }
 
     quizHud.classList.remove('hidden');
-    quizHudProgress.textContent = `Question ${session.current_index} of ${session.total_questions}`;
+
+    if (session.type === 'viva') {
+      const diffTag = session.difficulty ? session.difficulty.toUpperCase() : 'INTERMEDIATE';
+      quizHudTopic.textContent = `🎓 VIVA: ${session.topic || 'Oral Exam'} [${diffTag}]`;
+      if (session.is_follow_up) {
+        quizHudProgress.textContent = `Follow-Up Probe (Q${session.current_index} of ${session.total_questions})`;
+      } else {
+        quizHudProgress.textContent = `Question ${session.current_index} of ${session.total_questions}`;
+      }
+    } else {
+      quizHudTopic.textContent = `🎯 FLASHCARD QUIZ`;
+      quizHudProgress.textContent = `Question ${session.current_index} of ${session.total_questions}`;
+    }
 
     const pct = Math.round((session.current_index / session.total_questions) * 100);
     quizHudFill.style.width = `${pct}%`;
@@ -316,6 +328,12 @@
       message: messageText,
       session_id: state.activeSession ? state.activeSession.session_id : null,
       card_id: state.activeSession ? state.activeSession.card_id : null,
+      question: state.activeSession ? state.activeSession.question : null,
+      is_follow_up: state.activeSession ? Boolean(state.activeSession.is_follow_up) : false,
+      topic: state.activeSession ? state.activeSession.topic : null,
+      difficulty: state.activeSession ? state.activeSession.difficulty : null,
+      current_index: state.activeSession ? state.activeSession.current_index : 1,
+      total_questions: state.activeSession ? state.activeSession.total_questions : 3,
     };
 
     visualizerLabel.textContent = 'Processing MCP Tool Call...';
