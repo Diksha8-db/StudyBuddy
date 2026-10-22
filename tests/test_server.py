@@ -77,6 +77,11 @@ def test_mcp_tools_registration():
         "grade_answer",
         "get_weak_topics",
         "schedule_review",
+        "get_revision_plan",
+        "start_viva",
+        "record_answer",
+        "save_weak_topic",
+        "schedule_revision",
     ]
     for exp in expected:
         assert exp in tool_names
